@@ -1,6 +1,8 @@
 package es.dmr.doyle.samza;
 
 import org.apache.samza.config.Config;
+import org.apache.samza.storage.kv.Entry;
+import org.apache.samza.storage.kv.KeyValueIterator;
 import org.apache.samza.storage.kv.KeyValueStore;
 import org.apache.samza.system.IncomingMessageEnvelope;
 import org.apache.samza.system.OutgoingMessageEnvelope;
@@ -13,7 +15,7 @@ import java.util.Map;
 /**
  * Created by dmartinez on 4/16/16.
  */
-public class CountByLocationTask implements StreamTask, InitableTask {
+public class CountByLocationTask implements StreamTask, InitableTask, WindowableTask {
     private KeyValueStore<String, Integer> store;
 
     private static final String STORE_NAME = "count-by-location";
@@ -40,14 +42,33 @@ public class CountByLocationTask implements StreamTask, InitableTask {
         countByPlace++;
 
         store.put(place, countByPlace);
+    }
 
-        Map<String, Object> output = new HashMap<String, Object>();
+    /**
+     * Every minute we collect all the counts and publish them
+     *
+     * @param messageCollector
+     * @param taskCoordinator
+     * @throws Exception
+     */
+    @Override
+    public void window(MessageCollector messageCollector, TaskCoordinator taskCoordinator) throws Exception {
 
-        Map<String, String> outputCountByUserId = new HashMap<String, String>();
-        outputCountByUserId.put("place", place);
-        outputCountByUserId.put("count", countByPlace.toString());
-        output.put("data", outputCountByUserId);
+        KeyValueIterator<String, Integer> values = store.all();
 
-        collector.send(new OutgoingMessageEnvelope(new SystemStream(OUTPUT_SYSTEM_NAME, OUTPUT_STREAM_NAME), place, output));
+        while(values.hasNext()){
+            Entry<String, Integer> value = values.next();
+            if(value.getValue() > 0) {
+                Map<String, Object> output = new HashMap<String, Object>();
+                Map<String, Object> outputCountByPlace = new HashMap<String, Object>();
+                outputCountByPlace.put("place", value.getKey());
+                outputCountByPlace.put("count", value.getValue());
+                output.put("data", outputCountByPlace);
+
+                messageCollector.send(new OutgoingMessageEnvelope(new SystemStream(OUTPUT_SYSTEM_NAME, OUTPUT_STREAM_NAME), value.getKey(), output));
+                // reset
+                store.put(value.getKey(), 0);
+            }
+        }
     }
 }
